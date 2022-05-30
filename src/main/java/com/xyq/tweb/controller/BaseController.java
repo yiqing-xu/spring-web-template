@@ -1,7 +1,12 @@
 package com.xyq.tweb.controller;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xyq.tweb.domain.web.Result;
+import com.xyq.tweb.util.RestTemplateUtils;
+import com.xyq.tweb.util.SpringContextUtils;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.util.StringUtils;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import javax.annotation.Resource;
@@ -17,10 +22,10 @@ import java.net.URLEncoder;
 @RestController
 public class BaseController {
 
-    @Resource(name = "httpServletRequest")
+    @Resource
     protected HttpServletRequest request;
 
-    @Resource(name = "httpServletResponse")
+    @Resource
     protected HttpServletResponse response;
 
     public BaseController() {
@@ -41,18 +46,22 @@ public class BaseController {
             e.printStackTrace();
         }
         response.setHeader("Content-Disposition", "attachment; filename=" + filename);
-        try {
-            ServletOutputStream outputStream = response.getOutputStream();
-            FileInputStream inputStream = new FileInputStream(file);
+        try (FileInputStream inputStream = new FileInputStream(file);
+             ServletOutputStream outputStream = response.getOutputStream()) {
             byte[] bytes = new byte[1024];
             while (inputStream.read(bytes) > 0) {
                 outputStream.write(bytes);
             }
             inputStream.close();
             outputStream.flush();
-            outputStream.close();
         } catch (IOException e) {
             e.printStackTrace();
         }
     }
+
+    @GetMapping("/test")
+    public Object test() {
+        return RestTemplateUtils.get().url("https://baidu.com").addQuery("code", "D4A0D013119D51GD30").build().object(Result.class).getData();
+    }
+
 }
