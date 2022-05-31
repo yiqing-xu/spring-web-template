@@ -61,7 +61,8 @@ public class BaseController {
 
     @GetMapping("/test")
     public Object test() {
-        return RestTemplateUtils.get().url("https://baidu.com").addQuery("code", "D4A0D013119D51GD30").build().object(Result.class).getData();
+        RestTemplateUtils.get().url("http://192.168.11.24:6888/api/test").addQuery("code", "D4A0D013119D51GD30").build().async();
+        return "abc";
     }
 
 }

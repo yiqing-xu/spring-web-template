@@ -6,9 +6,11 @@ import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
 import org.springframework.http.*;
 import org.springframework.http.client.ClientHttpRequestInterceptor;
+import org.springframework.http.client.ClientHttpResponse;
 import org.springframework.util.FileCopyUtils;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
+import org.springframework.web.client.ResponseErrorHandler;
 import org.springframework.web.client.RestTemplate;
 
 import java.io.File;
@@ -20,8 +22,17 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.StringJoiner;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
-
+/**
+ * <p>
+ * 一个RestTemplate的链式请求调用
+ * </p>
+ *
+ * @author xuyiqing
+ * @since 2022/5/30
+ */
 public class RestTemplateUtils {
 
     private static RestTemplate restTemplate;
@@ -33,8 +44,33 @@ public class RestTemplateUtils {
             restTemplate = new RestTemplate();
         }
         restTemplate.setInterceptors(Collections.singletonList(createHttpBasicIntereptor()));
+        restTemplate.setErrorHandler(createResponseErrorHandler());
     }
 
+    private static class Executor {
+        private static final ThreadPoolExecutor executor = new ThreadPoolExecutor(
+                0,
+                10,
+                30,
+                TimeUnit.SECONDS,
+                new ArrayBlockingQueue<>(100),
+                new ThreadFactory() {
+                    private final AtomicInteger poolNumber = new AtomicInteger(1);
+                    @Override
+                    public Thread newThread(Runnable r) {
+                        Thread thread = new Thread(r);
+                        thread.setName("RestTemplateUtis-Executor-" + poolNumber.getAndIncrement());
+                        thread.setDaemon(true);
+                        return thread;
+                    }
+                },
+                new ThreadPoolExecutor.CallerRunsPolicy()
+        );
+    }
+
+    /**
+     * @return httpbasic认证拦截
+     */
     private static ClientHttpRequestInterceptor createHttpBasicIntereptor() {
         return (request, body, execution) -> {
             String userInfo = request.getURI().getUserInfo();
@@ -47,6 +83,27 @@ public class RestTemplateUtils {
             }
             return execution.execute(request, body);
         };
+    }
+
+    /**
+     * @return statuscode非200异常绕过, 直接返回
+     */
+    private static ResponseErrorHandler createResponseErrorHandler() {
+        return new ResponseErrorHandler() {
+            @Override
+            public boolean hasError(ClientHttpResponse clientHttpResponse) throws IOException {
+                return false;
+            }
+
+            @Override
+            public void handleError(ClientHttpResponse clientHttpResponse) throws IOException {
+
+            }
+        };
+    }
+
+    public static Builder builder() {
+        return new Builder();
     }
 
     public static Builder get() {
@@ -91,19 +148,19 @@ public class RestTemplateUtils {
         private HttpEntity<Object> httpEntity;
 
         private <T> ResponseEntity<T> doGET(Class<T> tClass) {
-            return restTemplate.exchange(this.url, HttpMethod.GET, httpEntity, tClass);
+            return restTemplate.exchange(this.url, HttpMethod.GET, this.httpEntity, tClass);
         }
 
         private <T> ResponseEntity<T> doPOST(Class<T> tClass) {
-            return restTemplate.postForEntity(this.url, httpEntity, tClass);
+            return restTemplate.exchange(this.url, HttpMethod.POST, this.httpEntity, tClass);
         }
 
         private <T> ResponseEntity<T> doPUT(Class<T> tClass) {
-            return restTemplate.exchange(url, HttpMethod.PUT, httpEntity, tClass);
+            return restTemplate.exchange(this.url, HttpMethod.PUT, this.httpEntity, tClass);
         }
 
-        private <T> ResponseEntity<T> doDelete(Class<T> tClass) {
-            return restTemplate.exchange(url, HttpMethod.DELETE, httpEntity, tClass);
+        private <T> ResponseEntity<T> doDELETE(Class<T> tClass) {
+            return restTemplate.exchange(this.url, HttpMethod.DELETE, this.httpEntity, tClass);
         }
 
         public <T> T object(Class<T> t) {
@@ -123,17 +180,28 @@ public class RestTemplateUtils {
         }
 
         public <T> ResponseEntity<T> entity(Class<T> tClass) {
-            if (httpMethod.equals(HttpMethod.GET)) {
-                return doGET(tClass);
-            } else if (httpMethod.equals(HttpMethod.POST)) {
-                return doPOST(tClass);
-            } else if (httpMethod.equals(HttpMethod.PUT)) {
-                return doPUT(tClass);
-            } else if (httpMethod.equals(HttpMethod.DELETE)) {
-                return doDelete(tClass);
-            } else {
-                return doGET(tClass);
-            }
+            return restTemplate.exchange(this.url, this.httpMethod, this.httpEntity, tClass);
+        }
+
+        public <T> void async(AsyncRunnable runnable, Class<T> t) {
+            Runnable job = () -> {
+                ResponseEntity<T> entity = entity(t);
+                runnable.onSuccess(entity);
+            };
+            CompletableFuture.runAsync(job);
+        }
+
+        public void async() {
+            Runnable job = () -> {
+                try {
+                    Thread.sleep(5000);
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+                entity(String.class);
+            };
+            //CompletableFuture.runAsync(job);
+            Executor.executor.submit(job);
         }
 
     }
@@ -153,7 +221,7 @@ public class RestTemplateUtils {
                 context.url = context.url + "?" + stringJoiner;
             }
             if (context.form != null) {
-                context.headers.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
+                context.headers.setContentType(MediaType.MULTIPART_FORM_DATA);
                 context.httpEntity = new HttpEntity<>(context.form, context.headers);
             } else if (context.body != null) {
                 context.headers.setContentType(MediaType.APPLICATION_JSON);
@@ -197,6 +265,14 @@ public class RestTemplateUtils {
             return this;
         }
 
+        public Builder addQuery(MultiValueMap<String, String> queries) {
+            if (context.query == null) {
+                context.query = new LinkedMultiValueMap<>();
+            }
+            context.query.addAll(queries);
+            return this;
+        }
+
         public Builder addForm(String key, String value) {
             if (context.form == null) {
                 context.form = new LinkedMultiValueMap<>();
@@ -215,6 +291,16 @@ public class RestTemplateUtils {
 
         public Builder addForm(Map<String, String> forms) {
             for (Map.Entry<String, String> entry : forms.entrySet()) {
+                this.addForm(entry.getKey(), entry.getValue());
+            }
+            return this;
+        }
+
+        public Builder addForm(MultiValueMap<String, String> forms) {
+            if (context.form == null) {
+                context.form = new LinkedMultiValueMap<>();
+            }
+            for (Map.Entry<String, List<String>> entry : forms.entrySet()) {
                 this.addForm(entry.getKey(), entry.getValue());
             }
             return this;
@@ -260,12 +346,6 @@ public class RestTemplateUtils {
                 context.form.add(key, byteArrayResource);
             } catch (IOException e) {
                 e.printStackTrace();
-            } finally {
-                try {
-                    inputStream.close();
-                } catch (IOException ee) {
-                    ee.printStackTrace();
-                }
             }
             return this;
         }
@@ -294,6 +374,14 @@ public class RestTemplateUtils {
             context.headers.setBasicAuth(username, password, StandardCharsets.UTF_8);
             return this;
         }
+
+    }
+
+    public interface AsyncRunnable {
+
+        <T> void onSuccess(ResponseEntity<T> responseEntity);
+
+        default void onFail(Exception e) {};
 
     }
 
