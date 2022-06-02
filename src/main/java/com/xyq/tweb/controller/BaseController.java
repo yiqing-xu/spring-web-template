@@ -1,10 +1,9 @@
 package com.xyq.tweb.controller;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xyq.tweb.domain.web.Result;
-import com.xyq.tweb.util.RestTemplateUtils;
-import com.xyq.tweb.util.SpringContextUtils;
-import org.springframework.beans.factory.annotation.Autowired;
+import com.xyq.tweb.util.RestTemplateHelper;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.ResponseEntity;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -13,10 +12,7 @@ import javax.annotation.Resource;
 import javax.servlet.ServletOutputStream;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.IOException;
-import java.io.UnsupportedEncodingException;
+import java.io.*;
 import java.net.URLEncoder;
 
 @RestController
@@ -46,13 +42,12 @@ public class BaseController {
             e.printStackTrace();
         }
         response.setHeader("Content-Disposition", "attachment; filename=" + filename);
-        try (FileInputStream inputStream = new FileInputStream(file);
+        try (BufferedInputStream inputStream = new BufferedInputStream(new FileInputStream(file));
              ServletOutputStream outputStream = response.getOutputStream()) {
             byte[] bytes = new byte[1024];
             while (inputStream.read(bytes) > 0) {
                 outputStream.write(bytes);
             }
-            inputStream.close();
             outputStream.flush();
         } catch (IOException e) {
             e.printStackTrace();
@@ -61,7 +56,24 @@ public class BaseController {
 
     @GetMapping("/test")
     public Object test() {
-        RestTemplateUtils.get().url("http://192.168.11.24:6888/api/test").addQuery("code", "D4A0D013119D51GD30").build().async();
+        RestTemplateHelper.AsyncRunnable asyncRunnable = new RestTemplateHelper.AsyncRunnable() {
+            @Override
+            public <T> void onSuccess(ResponseEntity<T> responseEntity) {
+                byte[] body = (byte[])responseEntity.getBody();
+                System.out.println(new String(body));
+            }
+
+            @Override
+            public void onFail(Exception e) {
+                System.out.println(e);
+                System.out.println("failed");
+            }
+        };
+        RestTemplateHelper.builder()
+                .method(HttpMethod.GET)
+                .url("http://192.168.11.24:6888/api/test")
+                .build()
+                .async(asyncRunnable, byte[].class);
         return "abc";
     }
 

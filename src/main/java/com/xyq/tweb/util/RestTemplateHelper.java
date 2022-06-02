@@ -13,16 +13,16 @@ import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.ResponseErrorHandler;
 import org.springframework.web.client.RestTemplate;
 
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.IOException;
-import java.io.InputStream;
+import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.StringJoiner;
-import java.util.concurrent.*;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -33,10 +33,9 @@ import java.util.concurrent.atomic.AtomicInteger;
  * @author xuyiqing
  * @since 2022/5/30
  */
-public class RestTemplateUtils {
+public class RestTemplateHelper {
 
     private static RestTemplate restTemplate;
-
     static {
         try {
             restTemplate = SpringContextUtils.getBean(RestTemplate.class);
@@ -47,6 +46,9 @@ public class RestTemplateUtils {
         restTemplate.setErrorHandler(createResponseErrorHandler());
     }
 
+    /**
+     * 静态内部类实现懒汉式加载线程池
+     */
     private static class Executor {
         private static final ThreadPoolExecutor executor = new ThreadPoolExecutor(
                 0,
@@ -59,7 +61,7 @@ public class RestTemplateUtils {
                     @Override
                     public Thread newThread(Runnable r) {
                         Thread thread = new Thread(r);
-                        thread.setName("RestTemplateUtis-Executor-" + poolNumber.getAndIncrement());
+                        thread.setName("RestTemplateHelper-Executor-" + poolNumber.getAndIncrement());
                         thread.setDaemon(true);
                         return thread;
                     }
@@ -179,28 +181,49 @@ public class RestTemplateUtils {
             return this.entity(Resource.class).getBody();
         }
 
+        public void file(File file) {
+            Resource resource = this.resource();
+            boolean isFile = file.isFile();
+            if (!isFile) {
+                String filename = resource.getFilename();
+                if (filename != null && !filename.isEmpty()) {
+                    file = new File(file, filename);
+                } else {
+                    file = new File(file, "unknown.unknown");
+                }
+            }
+            try (InputStream inputStream = resource.getInputStream();
+                 BufferedInputStream bufferedInputStream = new BufferedInputStream(inputStream);
+                 BufferedOutputStream bufferedOutputStream = new BufferedOutputStream(new FileOutputStream(file))) {
+                byte[] bytes = new byte[1024];
+                while (bufferedInputStream.read(bytes) > 0) {
+                    bufferedOutputStream.write(bytes);
+                }
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+
         public <T> ResponseEntity<T> entity(Class<T> tClass) {
             return restTemplate.exchange(this.url, this.httpMethod, this.httpEntity, tClass);
         }
 
         public <T> void async(AsyncRunnable runnable, Class<T> t) {
             Runnable job = () -> {
-                ResponseEntity<T> entity = entity(t);
-                runnable.onSuccess(entity);
+                try {
+                    ResponseEntity<T> entity = entity(t);
+                    runnable.onSuccess(entity);
+                } catch (Exception e) {
+                    runnable.onFail(e);
+                }
             };
-            CompletableFuture.runAsync(job);
+            Executor.executor.submit(job);
         }
 
         public void async() {
             Runnable job = () -> {
-                try {
-                    Thread.sleep(5000);
-                } catch (InterruptedException e) {
-                    e.printStackTrace();
-                }
                 entity(String.class);
             };
-            //CompletableFuture.runAsync(job);
             Executor.executor.submit(job);
         }
 
@@ -234,6 +257,11 @@ public class RestTemplateUtils {
 
         public Builder method(HttpMethod httpMethod) {
             context.httpMethod = httpMethod;
+            return this;
+        }
+
+        public Builder method(String httpMethod) {
+            context.httpMethod = HttpMethod.valueOf(httpMethod.toUpperCase());
             return this;
         }
 
@@ -375,13 +403,29 @@ public class RestTemplateUtils {
             return this;
         }
 
+        public MultiValueMap<String, String> query() {
+            return context.query;
+        }
+
+        public MultiValueMap<String, Object> form() {
+            return context.form;
+        }
+
+        public Object body() {
+            return context.body;
+        }
+
+        public HttpHeaders headers() {
+            return context.headers;
+        }
+
     }
 
     public interface AsyncRunnable {
 
         <T> void onSuccess(ResponseEntity<T> responseEntity);
 
-        default void onFail(Exception e) {};
+        void onFail(Exception e);
 
     }
 
