@@ -15,7 +15,6 @@ import org.springframework.web.client.RestTemplate;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.StringJoiner;
@@ -24,6 +23,7 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Logger;
 
 /**
  * <p>
@@ -33,8 +33,9 @@ import java.util.concurrent.atomic.AtomicInteger;
  * @author xuyiqing
  * @since 2022/5/30
  */
-public class RestTemplateHelper {
+public class RestHelper {
 
+    private static final Logger log = Logger.getLogger(RestHelper.class.getName());
     private static RestTemplate restTemplate;
     static {
         try {
@@ -42,16 +43,16 @@ public class RestTemplateHelper {
         } catch (NoSuchBeanDefinitionException e) {
             restTemplate = new RestTemplate();
         }
-        restTemplate.setInterceptors(Collections.singletonList(createHttpBasicIntereptor()));
+        addInterceptor(createHttpBasicIntereptor());
         restTemplate.setErrorHandler(createResponseErrorHandler());
     }
 
     /**
-     * 静态内部类实现懒汉式加载线程池
+     * 静态内部类实现懒加载线程池
      */
     private static class Executor {
         private static final ThreadPoolExecutor executor = new ThreadPoolExecutor(
-                0,
+                1,
                 10,
                 30,
                 TimeUnit.SECONDS,
@@ -62,12 +63,20 @@ public class RestTemplateHelper {
                     public Thread newThread(Runnable r) {
                         Thread thread = new Thread(r);
                         thread.setName("RestTemplateHelper-Executor-" + poolNumber.getAndIncrement());
-                        thread.setDaemon(true);
+                        if (thread.isDaemon())
+                            thread.setDaemon(false);
+                        if (thread.getPriority() != Thread.NORM_PRIORITY)
+                            thread.setPriority(Thread.NORM_PRIORITY);
                         return thread;
                     }
                 },
                 new ThreadPoolExecutor.CallerRunsPolicy()
         );
+    }
+
+    private static void addInterceptor(ClientHttpRequestInterceptor interceptor) {
+        List<ClientHttpRequestInterceptor> interceptors = restTemplate.getInterceptors();
+        interceptors.add(interceptor);
     }
 
     /**
@@ -141,73 +150,83 @@ public class RestTemplateHelper {
     }
 
     public static class RequestContext {
-        private HttpMethod httpMethod = HttpMethod.GET;
-        private String url;
-        private MultiValueMap<String, String> query;
-        private MultiValueMap<String, Object> form;
-        private final HttpHeaders headers = new HttpHeaders();
-        private Object body;
-        private HttpEntity<Object> httpEntity;
+        private HttpMethod httpMethod = HttpMethod.GET;  // http请求方法
+        private String url;                              // 资源地址
+        private MultiValueMap<String, String> query;     // query GET请求参数
+        private MultiValueMap<String, Object> form;      // formdata请求参数
+        private HttpHeaders headers = new HttpHeaders(); // 请求头
+        private Object body;                             // 请求体; 实体类基于jackson序列化
+        private HttpEntity<Object> httpEntity;           // 请求组装实体
 
         private <T> ResponseEntity<T> doGET(Class<T> tClass) {
-            return restTemplate.exchange(this.url, HttpMethod.GET, this.httpEntity, tClass);
+            return restTemplate.exchange(url, HttpMethod.GET, httpEntity, tClass);
         }
 
         private <T> ResponseEntity<T> doPOST(Class<T> tClass) {
-            return restTemplate.exchange(this.url, HttpMethod.POST, this.httpEntity, tClass);
+            return restTemplate.exchange(url, HttpMethod.POST, httpEntity, tClass);
         }
 
         private <T> ResponseEntity<T> doPUT(Class<T> tClass) {
-            return restTemplate.exchange(this.url, HttpMethod.PUT, this.httpEntity, tClass);
+            return restTemplate.exchange(url, HttpMethod.PUT, httpEntity, tClass);
         }
 
         private <T> ResponseEntity<T> doDELETE(Class<T> tClass) {
-            return restTemplate.exchange(this.url, HttpMethod.DELETE, this.httpEntity, tClass);
+            return restTemplate.exchange(url, HttpMethod.DELETE, httpEntity, tClass);
         }
 
+        // 响应体反序列化成实体对象
         public <T> T object(Class<T> t) {
-            return this.entity(t).getBody();
+            return entity(t).getBody();
         }
 
+        // 响应体反序列化成字符串
         public String string() {
-            return this.entity(String.class).getBody();
+            return entity(String.class).getBody();
         }
 
+        // 响应体反序列化成字节数组
         public byte[] bytes() {
-            return this.entity(byte[].class).getBody();
+            return entity(byte[].class).getBody();
         }
 
+        // 响应体成文件资源
         public Resource resource() {
-            return this.entity(Resource.class).getBody();
+            return entity(Resource.class).getBody();
         }
 
+        // 响应体保存成文件
         public void file(File file) {
-            Resource resource = this.resource();
-            boolean isFile = file.isFile();
-            if (!isFile) {
+            Resource resource = resource();
+            if (file.isDirectory()) {
                 String filename = resource.getFilename();
-                if (filename != null && !filename.isEmpty()) {
+                if (filename != null && !filename.isEmpty()) {  // 文件流提取
                     file = new File(file, filename);
                 } else {
-                    file = new File(file, "unknown.unknown");
+                    String[] urls = url.split("/");  // 静态资源提取
+                    String staticFilename = urls[urls.length - 1];
+                    file = new File(file, staticFilename);
                 }
             }
-            try (InputStream inputStream = resource.getInputStream();
-                 BufferedInputStream bufferedInputStream = new BufferedInputStream(inputStream);
+            try (BufferedInputStream bufferedInputStream = new BufferedInputStream(resource.getInputStream());
                  BufferedOutputStream bufferedOutputStream = new BufferedOutputStream(new FileOutputStream(file))) {
                 byte[] bytes = new byte[1024];
                 while (bufferedInputStream.read(bytes) > 0) {
                     bufferedOutputStream.write(bytes);
                 }
+                bufferedOutputStream.flush();
             } catch (IOException e) {
                 e.printStackTrace();
             }
         }
 
+        // 返回整个响应体
         public <T> ResponseEntity<T> entity(Class<T> tClass) {
-            return restTemplate.exchange(this.url, this.httpMethod, this.httpEntity, tClass);
+            log.info(String.format("method=%s; url=%s; query=%s; form=%s; body=%s; header=%s",
+                    url, httpMethod, query, form, body, headers));
+            return restTemplate.exchange(url, httpMethod, httpEntity, tClass);
         }
 
+        // 异步调用, 回调处理
         public <T> void async(AsyncRunnable runnable, Class<T> t) {
             Runnable job = () -> {
                 try {
@@ -220,6 +239,7 @@ public class RestTemplateHelper {
             Executor.executor.submit(job);
         }
 
+        // 异步调用, 回调处理
         public void async() {
             Runnable job = () -> {
                 entity(String.class);
@@ -236,23 +256,27 @@ public class RestTemplateHelper {
         public RequestContext build() {
             if (context.query != null) {
                 StringJoiner stringJoiner = new StringJoiner("&");
-                for (Map.Entry<String, List<String>> entry : context.query.entrySet()) {
-                    for (String value : entry.getValue()) {
-                        stringJoiner.add(entry.getKey() + "=" + value);
-                    }
-                }
+                context.query.forEach((k, vs) -> vs.forEach(v -> stringJoiner.add(k + "=" + v)));
                 context.url = context.url + "?" + stringJoiner;
             }
             if (context.form != null) {
-                context.headers.setContentType(MediaType.MULTIPART_FORM_DATA);
+                if (context.headers.getContentType() == null) {  // formdata
+                    context.headers.setContentType(MediaType.MULTIPART_FORM_DATA);
+                }
                 context.httpEntity = new HttpEntity<>(context.form, context.headers);
             } else if (context.body != null) {
-                context.headers.setContentType(MediaType.APPLICATION_JSON);
+                if (context.headers.getContentType() == null) {  // body参数默认采用json格式
+                    context.headers.setContentType(MediaType.APPLICATION_JSON);
+                }
                 context.httpEntity = new HttpEntity<>(context.body, context.headers);
             } else {
                 context.httpEntity = new HttpEntity<>(context.headers);
             }
             return context;
+        }
+
+        public RequestContext execute() {
+            return build();
         }
 
         public Builder method(HttpMethod httpMethod) {
@@ -270,7 +294,7 @@ public class RestTemplateHelper {
             return this;
         }
 
-        public Builder addQuery(String key, String value) {
+        public Builder query(String key, String value) {
             if (context.query == null) {
                 context.query = new LinkedMultiValueMap<>();
             }
@@ -278,7 +302,7 @@ public class RestTemplateHelper {
             return this;
         }
 
-        public Builder addQuery(String key, List<String> values) {
+        public Builder query(String key, List<String> values) {
             if (context.query == null) {
                 context.query = new LinkedMultiValueMap<>();
             }
@@ -286,14 +310,14 @@ public class RestTemplateHelper {
             return this;
         }
 
-        public Builder addQuery(Map<String, String> queries) {
+        public Builder query(Map<String, String> queries) {
             for (Map.Entry<String, String> entry : queries.entrySet()) {
-                this.addQuery(entry.getKey(), entry.getValue());
+                query(entry.getKey(), entry.getValue());
             }
             return this;
         }
 
-        public Builder addQuery(MultiValueMap<String, String> queries) {
+        public Builder query(MultiValueMap<String, String> queries) {
             if (context.query == null) {
                 context.query = new LinkedMultiValueMap<>();
             }
@@ -301,7 +325,12 @@ public class RestTemplateHelper {
             return this;
         }
 
-        public Builder addForm(String key, String value) {
+        public Builder removeQuery(String key) {
+            context.query.remove(key);
+            return this;
+        }
+
+        public Builder form(String key, String value) {
             if (context.form == null) {
                 context.form = new LinkedMultiValueMap<>();
             }
@@ -309,7 +338,7 @@ public class RestTemplateHelper {
             return this;
         }
 
-        public Builder addForm(String key, List<String> values) {
+        public Builder form(String key, List<String> values) {
             if (context.form == null) {
                 context.form = new LinkedMultiValueMap<>();
             }
@@ -317,24 +346,24 @@ public class RestTemplateHelper {
             return this;
         }
 
-        public Builder addForm(Map<String, String> forms) {
+        public Builder form(Map<String, String> forms) {
             for (Map.Entry<String, String> entry : forms.entrySet()) {
-                this.addForm(entry.getKey(), entry.getValue());
+                form(entry.getKey(), entry.getValue());
             }
             return this;
         }
 
-        public Builder addForm(MultiValueMap<String, String> forms) {
+        public Builder form(MultiValueMap<String, String> forms) {
             if (context.form == null) {
                 context.form = new LinkedMultiValueMap<>();
             }
             for (Map.Entry<String, List<String>> entry : forms.entrySet()) {
-                this.addForm(entry.getKey(), entry.getValue());
+                form(entry.getKey(), entry.getValue());
             }
             return this;
         }
 
-        public Builder addFile(String key, File file) {
+        public Builder form(String key, File file) {
             FileSystemResource fileSystemResource = new FileSystemResource(file);
             if (context.form == null) {
                 context.form = new LinkedMultiValueMap<>();
@@ -343,23 +372,16 @@ public class RestTemplateHelper {
             return this;
         }
 
-        public Builder addFile(String key, List<File> files) {
-            for (File file : files) {
-                this.addFile(key, file);
-            }
-            return this;
-        }
-
-        public Builder addFile(String key, String filename, File file) {
+        public Builder form(String key, String filename, File file) {
             try (FileInputStream inputStream = new FileInputStream(file);) {
-                this.addFile(key, filename, inputStream);
+                form(key, filename, inputStream);
             } catch (IOException e) {
                 e.printStackTrace();
             }
             return this;
         }
 
-        public Builder addFile(String key, String filename, InputStream inputStream) {
+        public Builder form(String key, String filename, InputStream inputStream) {
             try {
                 byte[] bytes = FileCopyUtils.copyToByteArray(inputStream);
                 ByteArrayResource byteArrayResource = new ByteArrayResource(bytes) {
@@ -378,27 +400,61 @@ public class RestTemplateHelper {
             return this;
         }
 
-        public Builder addBody(String body) {
+        public Builder removeForm(String key) {
+            context.form.remove(key);
+            return this;
+        }
+
+        public Builder body(String body) {
             context.body = body;
             return this;
         }
 
-        public Builder addBody(Object body) {
+        public Builder body(Object body) {
             context.body = body;
             return this;
         }
 
-        public Builder addHeader(String key, String value) {
+        public Builder removeBody() {
+            context.body = null;
+            return this;
+        }
+
+        public Builder header(String key, String value) {
             context.headers.add(key, value);
             return this;
         }
 
-        public Builder addCookie(String key, String value) {
+        public Builder header(HttpHeaders headers) {
+            context.headers.addAll(headers);
+            return this;
+        }
+
+        public Builder header(HttpHeaders headers, Boolean set) {
+            if (set != null && set) {
+                context.headers = headers;
+            } else {
+                context.headers.addAll(headers);
+            }
+            return this;
+        }
+
+        public Builder removeHeader(String key) {
+            context.headers.remove(key);
+            return this;
+        }
+
+        public Builder contentType(MediaType mediaType) {
+            context.headers.setContentType(mediaType);
+            return this;
+        }
+
+        public Builder cookie(String key, String value) {
             context.headers.add("Cookie", key + "=" + value);
             return this;
         }
 
-        public Builder setBasicAuth(String username, String password) {
+        public Builder basic(String username, String password) {
             context.headers.setBasicAuth(username, password, StandardCharsets.UTF_8);
             return this;
         }
@@ -415,7 +471,7 @@ public class RestTemplateHelper {
             return context.body;
         }
 
-        public HttpHeaders headers() {
+        public HttpHeaders header() {
             return context.headers;
         }
 

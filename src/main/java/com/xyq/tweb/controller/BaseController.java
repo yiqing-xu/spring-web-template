@@ -1,9 +1,8 @@
 package com.xyq.tweb.controller;
 
 import com.xyq.tweb.domain.web.Result;
-import com.xyq.tweb.util.RestTemplateHelper;
+import com.xyq.tweb.util.RestHelper;
 import org.springframework.http.HttpMethod;
-import org.springframework.http.ResponseEntity;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -56,25 +55,12 @@ public class BaseController {
 
     @GetMapping("/test")
     public Object test() {
-        RestTemplateHelper.AsyncRunnable asyncRunnable = new RestTemplateHelper.AsyncRunnable() {
-            @Override
-            public <T> void onSuccess(ResponseEntity<T> responseEntity) {
-                byte[] body = (byte[])responseEntity.getBody();
-                System.out.println(new String(body));
-            }
-
-            @Override
-            public void onFail(Exception e) {
-                System.out.println(e);
-                System.out.println("failed");
-            }
-        };
-        RestTemplateHelper.builder()
+        String string = RestHelper.builder()
                 .method(HttpMethod.GET)
-                .url("http://192.168.11.24:6888/api/test")
+                .url("http://aegis:shield@192.168.11.24:9201/data_point_v1/_mapping")
                 .build()
-                .async(asyncRunnable, byte[].class);
-        return "abc";
+                .string();
+        return string;
     }
 
 }
