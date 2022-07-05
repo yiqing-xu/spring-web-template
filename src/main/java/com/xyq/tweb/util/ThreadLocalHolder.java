@@ -1,10 +1,5 @@
 package com.xyq.tweb.util;
 
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
-
-import java.lang.reflect.Field;
-
 /**
  * <p>
  *
@@ -15,7 +10,6 @@ import java.lang.reflect.Field;
  */
 public class ThreadLocalHolder {
 
-    private static final Logger logger = LogManager.getLogger(ThreadLocalHolder.class);
     private static final ThreadLocal<Context> threadLocal = ThreadLocal.withInitial(Context::new);
 
     public static void set(Context context) {
@@ -32,26 +26,12 @@ public class ThreadLocalHolder {
 
     public static void set(String field, Object value) {
         Context context = threadLocal.get();
-        try {
-            Field fieldField = context.getClass().getDeclaredField(field);
-            if (!fieldField.isAccessible()) fieldField.setAccessible(true);
-            fieldField.set(context, value);
-        } catch (NoSuchFieldException | IllegalAccessException e) {
-            e.printStackTrace();
-        }
+        ReflectUtils.setFieldValue(context, field, value);
     }
 
-    public static Object get(String field) {
-        Object obj = null;
+    public static <T> T get(String field) {
         Context context = threadLocal.get();
-        try {
-            Field fieldField = context.getClass().getDeclaredField(field);
-            if (!fieldField.isAccessible()) fieldField.setAccessible(true);
-            obj = fieldField.get(context);
-        } catch (NoSuchFieldException | IllegalAccessException e) {
-            e.printStackTrace();
-        }
-        return obj;
+        return ReflectUtils.getFieldValue(context, field);
     }
 
     public static class Context {

@@ -57,7 +57,7 @@ public class BaseController {
     public Object test() {
         String string = RestHelper.builder()
                 .method(HttpMethod.GET)
-                .url("http://aegis:shield@192.168.11.24:9201/data_point_v1/_mapping")
+                .url("")
                 .build()
                 .string();
         return string;
